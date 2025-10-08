@@ -1,0 +1,1 @@
+export const Keycodes =  Phaser.Input.Keyboard.KeyCodes;
