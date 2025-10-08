@@ -2,27 +2,45 @@ import Phaser from "phaser";
 import type { KeyboardKey, SpriteWithDynamicBody } from "../types/phaser";
 import { Keycodes } from "../consts/phaser";
 import { handleBotPaddle } from "../logic/botAI";
+import { SoundManager } from "../audio/soundManager";
+
+const GAME_CONFIG = {
+    BALL_SPEED: 200,
+    PADDLE_SPEED: 300,
+    MAX_BALL_SPEED: 800,
+    BALL_SIZE: 20,
+    PADDLE_WIDTH: 20,
+    PADDLE_HEIGHT: 100,
+    SCORE_FONT: {
+        fontSize: "64px",
+        color: "#FFF",
+        fontFamily: "Arial",
+    },
+    COLORS: {
+        BALL_START: 0x7dd3fc,
+        BALL_HIT_TARGET: "#ff0000",
+    }
+};
 
 class GameScene extends Phaser.Scene {
     private ball!: SpriteWithDynamicBody;
     private leftPaddle!: SpriteWithDynamicBody;
     private rightPaddle!: SpriteWithDynamicBody;
     private keys?: { W: KeyboardKey; S: KeyboardKey };
-
-    private paddleSpeed = 300;
+    private scoreText!: Phaser.GameObjects.Text;
+    private soundManager!: SoundManager;
 
     private leftScore = 0;
     private rightScore = 0;
-    private scoreText!: Phaser.GameObjects.Text;
 
     constructor() {
-        super("GameScene")
+        super("GameScene");
     }
 
     preload() {
-        this.load.image("circle", "/assets/64x64/circle.png");
-        this.load.image("square", "/assets/64x64/square.png");
-        this.load.image("dashed-line", "/assets/dashed-line.png");
+        this.load.image("circle", "/assets/images/64x64/circle.png");
+        this.load.image("square", "/assets/images/64x64/square.png");
+        this.load.image("dashed-line", "/assets/images/dashed-line.png");
     }
 
     create() {
@@ -31,130 +49,136 @@ class GameScene extends Phaser.Scene {
         this.createPaddles();
         this.setupCollisions();
         this.setupControls();
-        this.createGUI();
+        this.createScoreDisplay();
+
+        this.soundManager = SoundManager.getInstance(this);
     }
 
     update() {
-        this.handlePaddleControls();
+        this.updatePlayerPaddle();
         handleBotPaddle(this.ball, this.rightPaddle, {
-            paddleSpeed: this.paddleSpeed,
+            paddleSpeed: GAME_CONFIG.PADDLE_SPEED,
             height: this.scale.height
         });
-        this.checkScore();
+        this.checkForScore();
     }
 
-    // ─── Initialization Helpers ─────────────────────────────
+    // ─── Scene Setup ─────────────────────────────
 
-    createBackground() {
-        this.add.image(400, 300, "dashed-line")
-            .setDepth(0);
+    private createBackground() {
+        this.add.image(400, 300, "dashed-line").setDepth(0);
     }
 
-    createBall() {
+    private createBall() {
         this.ball = this.physics.add.sprite(400, 300, "circle")
-            .setDisplaySize(20, 20)
-            .setTint(0x7dd3fc)
+            .setDisplaySize(GAME_CONFIG.BALL_SIZE, GAME_CONFIG.BALL_SIZE)
+            .setTint(GAME_CONFIG.COLORS.BALL_START)
             .setCollideWorldBounds(true, 1, 1)
-            .setVelocity(200, 200)
+            .setVelocity(GAME_CONFIG.BALL_SPEED, GAME_CONFIG.BALL_SPEED)
             .setBounce(1, 1);
     }
 
-    createPaddles() {
-        this.leftPaddle = this.physics.add.sprite(50, 300, "square")
-            .setDisplaySize(20, 100)
+    private createPaddles() {
+        this.leftPaddle = this.createPaddle(50);
+        this.rightPaddle = this.createPaddle(750);
+    }
+
+    private createPaddle(x: number) {
+        return this.physics.add.sprite(x, 300, "square")
+            .setDisplaySize(GAME_CONFIG.PADDLE_WIDTH, GAME_CONFIG.PADDLE_HEIGHT)
             .setImmovable(true)
             .setCollideWorldBounds(true);
-        this.rightPaddle = this.physics.add.sprite(750, 300, "square")
-            .setDisplaySize(20, 100)
-            .setImmovable(true)
-            .setCollideWorldBounds(true);
     }
 
-    setupCollisions() {
-        this.physics.add.collider(this.ball, this.leftPaddle, () => this.handlePaddleHit())
-        this.physics.add.collider(this.ball, this.rightPaddle, () => this.handlePaddleHit())
+    private setupCollisions() {
+        this.physics.add.collider(this.ball, this.leftPaddle, this.onPaddleHit, undefined, this);
+        this.physics.add.collider(this.ball, this.rightPaddle, this.onPaddleHit, undefined, this);
     }
 
-    setupControls() {
-        if (this.input.keyboard) {
-            this.keys = this.input.keyboard.addKeys({
-                W: Keycodes.W,
-                S: Keycodes.S
-            }) as any
-        }
+    private setupControls() {
+        if (!this.input.keyboard) return;
+        this.keys = this.input.keyboard.addKeys({
+            W: Keycodes.W,
+            S: Keycodes.S,
+        }) as any;
     }
 
-    createGUI() {
-        this.scoreText = this.add.text(400, 50, "0   0", {
-            fontSize: "64px",
-            color: "#FFF",
-            fontFamily: "Arial",
-        }).setOrigin(0.5, 0.5)
+    private createScoreDisplay() {
+        this.scoreText = this.add.text(400, 50, "0   0", GAME_CONFIG.SCORE_FONT)
+            .setOrigin(0.5)
             .setAlpha(0.5);
     }
 
     // ─── Game Logic ─────────────────────────────
 
-    handlePaddleControls() {
+    private updatePlayerPaddle() {
         if (!this.keys) return;
-        if (this.keys.W.isDown) {
-            this.leftPaddle.setVelocityY(-this.paddleSpeed);
-        } else if (this.keys.S.isDown) {
-            this.leftPaddle.setVelocityY(this.paddleSpeed);
-        } else {
-            this.leftPaddle.setVelocityY(0);
+
+        const { W, S } = this.keys;
+        let velocityY = 0;
+
+        if (W.isDown) velocityY = -GAME_CONFIG.PADDLE_SPEED;
+        else if (S.isDown) velocityY = GAME_CONFIG.PADDLE_SPEED;
+
+        this.leftPaddle.setVelocityY(velocityY);
+    }
+
+    private checkForScore() {
+        const ballRadius = this.ball.displayHeight / 2 + 1;
+
+        if (this.ball.x - ballRadius < 0) {
+            this.incrementScore("right");
+        } else if (this.ball.x + ballRadius > this.scale.width) {
+            this.incrementScore("left");
         }
     }
 
-    checkScore() {
-        const ballSize = this.ball.displayHeight + 1;
+    private incrementScore(side: "left" | "right") {
+        if (side === "left") this.leftScore++;
+        else this.rightScore++;
 
-        if (this.ball.x - ballSize / 2 < 0) {
-            this.rightScore++;
-            this.updateScoreText();
-            this.resetBall(true);
-        }
-        else if (this.ball.x + ballSize / 2 > this.scale.width) {
-            this.leftScore++;
-            this.updateScoreText();
-            this.resetBall(false);
-        }
+        this.updateScoreText();
+        this.resetBall(side === "left");
+        this.soundManager.play("score")
     }
 
-    updateScoreText() {
+    private updateScoreText() {
         this.scoreText.setText(`${this.leftScore}   ${this.rightScore}`);
     }
 
-    resetBall(toLeft: boolean) {
+    private resetBall(toLeft: boolean) {
         this.ball.setPosition(400, 300);
+
         const direction = toLeft ? -1 : 1;
-
         let vy = Phaser.Math.Between(-200, 200);
+        if (Math.abs(vy) < 80) vy = 80 * Phaser.Math.RND.sign();
 
-        if (Math.abs(vy) < 80) {
-            vy = 80 * Phaser.Math.RND.sign();
-        }
-        this.ball.setVelocity(200 * direction, vy);
-        this.ball.setTint(0x7dd3fc)
+        this.ball
+            .setVelocity(GAME_CONFIG.BALL_SPEED * direction, vy)
+            .setTint(GAME_CONFIG.COLORS.BALL_START);
     }
 
-    handlePaddleHit() {
-        const currentVelocity = this.ball.body.velocity;
+    private onPaddleHit() {
+        const { velocity } = this.ball.body;
         const speedMultiplier = 1.1;
 
-        const newVelX = Phaser.Math.Clamp(currentVelocity.x * speedMultiplier, -800, 800);
-        const newVelY = Phaser.Math.Clamp(currentVelocity.y * speedMultiplier, -800, 800);
+        const newVelX = Phaser.Math.Clamp(velocity.x * speedMultiplier, -GAME_CONFIG.MAX_BALL_SPEED, GAME_CONFIG.MAX_BALL_SPEED);
+        const newVelY = Phaser.Math.Clamp(velocity.y * speedMultiplier, -GAME_CONFIG.MAX_BALL_SPEED, GAME_CONFIG.MAX_BALL_SPEED);
         this.ball.setVelocity(newVelX, newVelY);
 
+        this.updateBallTint();
+        this.soundManager.play("hit");
+    }
+
+    private updateBallTint() {
         const currentTint = this.ball.tintTopLeft;
-        const nextTint = Phaser.Display.Color.Interpolate.ColorWithColor(
+        const interpolated = Phaser.Display.Color.Interpolate.ColorWithColor(
             Phaser.Display.Color.IntegerToColor(currentTint),
-            Phaser.Display.Color.HexStringToColor("#ff0000"),
+            Phaser.Display.Color.HexStringToColor(GAME_CONFIG.COLORS.BALL_HIT_TARGET),
             10,
             1
         );
-
-        const newColor = Phaser.Display.Color.GetColor(nextTint.r, nextTint.g, nextTint.b);
+        const newColor = Phaser.Display.Color.GetColor(interpolated.r, interpolated.g, interpolated.b);
         this.ball.setTint(newColor);
     }
 }
